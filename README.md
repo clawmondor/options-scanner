@@ -2,6 +2,7 @@
 
 A Streamlit web app that scans a watchlist of liquid stocks for actionable options trading setups.
 
+url: [options.cmondor.com](https://options.cmondor.com)
 ## Features
 
 - **Unusual Activity** — Detects options contracts with high volume-to-open-interest ratios, which can signal institutional or insider positioning. Includes put/call ratio for directional bias.
