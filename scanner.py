@@ -3,12 +3,16 @@ Options Opportunities Scanner
 Finds stocks with unusual options activity, IV expansion, and setup opportunities.
 """
 
+import logging
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
+
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
 
 
 # Popular stocks with liquid options
@@ -34,7 +38,8 @@ def get_stock_info(ticker):
             'sector': info.get('sector', 'Unknown'),
             'change_pct': info.get('regularMarketChangePercent', 0),
         }
-    except Exception as e:
+    except (KeyError, ValueError, AttributeError, TypeError) as e:
+        logger.warning("get_stock_info failed for %s: %s", ticker, e)
         return None
 
 
@@ -45,19 +50,19 @@ def get_options_chain(ticker):
         expirations = stock.options
         if not expirations:
             return None
-        
-        # Get nearest expiration
+
         nearest_exp = expirations[0]
-        
+
         calls = stock.option_chain(nearest_exp).calls
         puts = stock.option_chain(nearest_exp).puts
-        
+
         return {
             'expiration': nearest_exp,
             'calls': calls,
             'puts': puts,
         }
-    except Exception as e:
+    except (KeyError, ValueError, AttributeError, TypeError) as e:
+        logger.warning("get_options_chain failed for %s: %s", ticker, e)
         return None
 
 
@@ -65,26 +70,25 @@ def calculate_iv_rank(chain_data, lookback_ivs=None):
     """Calculate IV rank (simplified)."""
     if chain_data is None:
         return None
-    
+
     calls = chain_data['calls']
     puts = chain_data['puts']
-    
-    # Get ATM IV
+
     try:
-        # Find near-the-money options
         price = yf.Ticker(chain_data.get('ticker', '')).info.get('currentPrice', 100)
         otm_calls = calls[calls['strike'] > price * 1.02]
         otm_puts = puts[puts['strike'] < price * 0.98]
-        
+
         if len(otm_calls) > 0:
             atm_iv = otm_calls['impliedVolatility'].median()
         elif len(otm_puts) > 0:
             atm_iv = otm_puts['impliedVolatility'].median()
         else:
             atm_iv = calls['impliedVolatility'].median()
-        
+
         return atm_iv * 100 if atm_iv else None
-    except:
+    except (KeyError, ValueError, AttributeError, TypeError) as e:
+        logger.warning("calculate_iv_rank failed: %s", e)
         return None
 
 
@@ -93,23 +97,20 @@ def find_unusual_activity(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        
-        # Get options for nearest expiration
+
         if not stock.options:
             return None
-        
+
         chain = stock.option_chain(stock.options[0])
         calls = chain.calls
         puts = chain.puts
-        
-        # Calculate volume/oi ratio
+
         calls['vol_oi_ratio'] = calls['volume'] / (calls['openInterest'] + 1)
         puts['vol_oi_ratio'] = puts['volume'] / (puts['openInterest'] + 1)
-        
-        # Find high volume activity
+
         high_vol_calls = calls[calls['vol_oi_ratio'] > 2].head(3)
         high_vol_puts = puts[puts['vol_oi_ratio'] > 2].head(3)
-        
+
         if len(high_vol_calls) > 0 or len(high_vol_puts) > 0:
             return {
                 'ticker': ticker,
@@ -121,8 +122,8 @@ def find_unusual_activity(ticker):
                 'total_put_volume': puts['volume'].sum(),
                 'put_call_ratio': puts['volume'].sum() / (calls['volume'].sum() + 1),
             }
-    except:
-        pass
+    except (KeyError, ValueError, AttributeError, TypeError) as e:
+        logger.warning("find_unusual_activity failed for %s: %s", ticker, e)
     return None
 
 
@@ -131,31 +132,28 @@ def find_iv_expansion(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        
-        # Get historical volatility
+
         hist = stock.history(period="3mo")
         if len(hist) < 30:
             return None
-        
+
         returns = hist['Close'].pct_change().dropna()
         hv20 = returns.rolling(20).std().iloc[-1] * np.sqrt(252) * 100
-        
-        # Get current IV from options
+
         if not stock.options:
             return None
-        
+
         chain = stock.option_chain(stock.options[0])
         calls = chain.calls
-        
-        # Find ATM call
+
         price = info.get('currentPrice', 100)
         atm_call = calls[(calls['strike'] - price).abs() < price * 0.02]
-        
+
         if len(atm_call) > 0:
             iv = atm_call['impliedVolatility'].iloc[0] * 100
             iv_rank = (iv - hv20) / (hv20 + 1) * 100 if hv20 else 0
-            
-            if iv_rank > 30:  # IV significantly higher than HV
+
+            if iv_rank > 30:
                 return {
                     'ticker': ticker,
                     'price': price,
@@ -164,8 +162,8 @@ def find_iv_expansion(ticker):
                     'iv_premium': iv_rank,
                     'change_pct': info.get('regularMarketChangePercent', 0),
                 }
-    except:
-        pass
+    except (KeyError, ValueError, AttributeError, TypeError) as e:
+        logger.warning("find_iv_expansion failed for %s: %s", ticker, e)
     return None
 
 
@@ -175,54 +173,51 @@ def find_credit_spread_setup(ticker):
         stock = yf.Ticker(ticker)
         info = stock.info
         price = info.get('currentPrice', 0)
-        
+
         if not stock.options or price == 0:
             return None
-        
-        # Get expirations 30-45 days out
+
         valid_exps = [e for e in stock.options if 25 <= (pd.Timestamp(e) - pd.Timestamp.now()).days <= 45]
         if not valid_exps:
             return None
-        
+
         exp = valid_exps[0]
         chain = stock.option_chain(exp)
         calls = chain.calls
         puts = chain.puts
-        
-        # Find support (using puts below current price)
+
         support_strikes = puts[puts['strike'] < price * 0.95].sort_values('strike', ascending=False)
-        
-        # Find resistance (using calls above current price)
         resistance_strikes = calls[calls['strike'] > price * 1.05].sort_values('strike')
-        
+
         if len(support_strikes) > 0 and len(resistance_strikes) > 0:
-            # Put credit spread: sell closer strike, buy further
             short_put = support_strikes.iloc[0]
             long_put = support_strikes.iloc[min(1, len(support_strikes)-1)]
-            
-            # Call credit spread: sell closer strike, buy further
+
             short_call = resistance_strikes.iloc[0]
             long_call = resistance_strikes.iloc[min(1, len(resistance_strikes)-1)]
-            
+
             put_credit = short_put['bid'] - long_put['ask']
             call_credit = short_call['bid'] - long_call['ask']
-            
-            put_risk = (long_put['strike'] - short_put['strike']) - put_credit
-            call_risk = (short_call['strike'] - long_call['strike']) - call_credit
-            
+
+            put_width = abs(long_put['strike'] - short_put['strike'])
+            call_width = abs(short_call['strike'] - long_call['strike'])
+
+            put_risk = put_width - put_credit if put_credit > 0 else None
+            call_risk = call_width - call_credit if call_credit > 0 else None
+
             return {
                 'ticker': ticker,
                 'price': price,
                 'expiration': exp,
                 'put_credit': put_credit,
                 'put_risk': put_risk,
-                'put_risk_reward': put_risk / (put_credit + 0.01) if put_credit > 0 else None,
+                'put_risk_reward': (put_risk / put_credit) if (put_risk is not None and put_credit > 0) else None,
                 'call_credit': call_credit,
                 'call_risk': call_risk,
-                'call_risk_reward': call_risk / (call_credit + 0.01) if call_credit > 0 else None,
+                'call_risk_reward': (call_risk / call_credit) if (call_risk is not None and call_credit > 0) else None,
             }
-    except Exception as e:
-        pass
+    except (KeyError, ValueError, AttributeError, TypeError) as e:
+        logger.warning("find_credit_spread_setup failed for %s: %s", ticker, e)
     return None
 
 
@@ -230,34 +225,30 @@ def scan_watchlist(tickers=None):
     """Scan entire watchlist for opportunities."""
     if tickers is None:
         tickers = WATCHLIST
-    
+
     results = {
         'unusual_activity': [],
         'iv_expansion': [],
         'credit_spreads': [],
     }
-    
-    for i, ticker in enumerate(tickers):
-        # Unusual activity
+
+    for ticker in tickers:
         ua = find_unusual_activity(ticker)
         if ua:
             results['unusual_activity'].append(ua)
-        
-        # IV expansion
+
         iv = find_iv_expansion(ticker)
         if iv:
             results['iv_expansion'].append(iv)
-        
-        # Credit spreads
+
         cs = find_credit_spread_setup(ticker)
         if cs and cs.get('put_credit', 0) > 0.30:
             results['credit_spreads'].append(cs)
-    
+
     return results
 
 
 if __name__ == "__main__":
-    # Test
     print("Testing options scanner...")
     results = scan_watchlist(['SPY', 'QQQ', 'TSLA', 'NVDA'])
     print(results)
