@@ -14,6 +14,8 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
+from cache import cached_yfinance
+
 
 # Popular stocks with liquid options
 WATCHLIST = [
@@ -23,6 +25,7 @@ WATCHLIST = [
 ]
 
 
+@cached_yfinance("stock_info")
 def get_stock_info(ticker):
     """Get basic stock info."""
     try:
@@ -43,6 +46,7 @@ def get_stock_info(ticker):
         return None
 
 
+@cached_yfinance("options_chain")
 def get_options_chain(ticker):
     """Get options chain data."""
     try:
