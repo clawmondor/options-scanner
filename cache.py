@@ -43,7 +43,8 @@ def _init_db():
 def _make_cache_key(prefix, *args, **kwargs):
     """Generate a unique cache key from function name and arguments."""
     key_data = f"{prefix}:{args}:{sorted(kwargs.items())}"
-    return hashlib.md5(key_data.encode()).hexdigest()
+    # B324: MD5 used for cache key generation (not security), explicitly mark as non-security
+    return hashlib.md5(key_data.encode(), usedforsecurity=False).hexdigest()
 
 
 def _serialize_data(data):
